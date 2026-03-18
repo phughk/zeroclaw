@@ -84,6 +84,11 @@ const KNOWN_CLIS: &[KnownCli] = &[
         category: CliCategory::PackageManager,
     },
     KnownCli {
+        name: "uv",
+        version_args: &["--version"],
+        category: CliCategory::PackageManager,
+    },
+    KnownCli {
         name: "docker",
         version_args: &["--version"],
         category: CliCategory::Container,

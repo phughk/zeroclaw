@@ -17,12 +17,28 @@ pub use noop::NoopObserver;
 #[cfg(feature = "observability-otel")]
 pub use otel::OtelObserver;
 #[cfg(feature = "observability-prometheus")]
-pub use prometheus::PrometheusObserver;
+pub use prometheus::{PrometheusObserver, SharedPrometheusObserver};
 pub use traits::{Observer, ObserverEvent};
 #[allow(unused_imports)]
 pub use verbose::VerboseObserver;
 
 use crate::config::ObservabilityConfig;
+
+/// Global singleton for the Prometheus observer.
+///
+/// All `create_observer("prometheus")` calls share this instance so that events
+/// from the channel server, agent loop, and gateway all land in the same registry
+/// that `/metrics` encodes.
+#[cfg(feature = "observability-prometheus")]
+static GLOBAL_PROMETHEUS: std::sync::OnceLock<std::sync::Arc<PrometheusObserver>> =
+    std::sync::OnceLock::new();
+
+#[cfg(feature = "observability-prometheus")]
+fn global_prometheus() -> std::sync::Arc<PrometheusObserver> {
+    GLOBAL_PROMETHEUS
+        .get_or_init(|| std::sync::Arc::new(PrometheusObserver::new()))
+        .clone()
+}
 
 /// Factory: create the right observer from config
 pub fn create_observer(config: &ObservabilityConfig) -> Box<dyn Observer> {
@@ -32,7 +48,7 @@ pub fn create_observer(config: &ObservabilityConfig) -> Box<dyn Observer> {
         "prometheus" => {
             #[cfg(feature = "observability-prometheus")]
             {
-                Box::new(PrometheusObserver::new())
+                Box::new(SharedPrometheusObserver(global_prometheus()))
             }
             #[cfg(not(feature = "observability-prometheus"))]
             {

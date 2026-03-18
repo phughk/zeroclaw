@@ -2,6 +2,7 @@ use super::traits::{Observer, ObserverEvent, ObserverMetric};
 use prometheus::{
     Encoder, GaugeVec, Histogram, HistogramOpts, HistogramVec, IntCounterVec, Registry, TextEncoder,
 };
+use std::sync::Arc;
 
 /// Prometheus-backed observer — exposes metrics for scraping via `/metrics`.
 pub struct PrometheusObserver {
@@ -410,6 +411,36 @@ impl Observer for PrometheusObserver {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+}
+
+/// Production wrapper that lets multiple call sites share a single `PrometheusObserver`
+/// (and its underlying `Registry`) via an `Arc`.
+///
+/// All `create_observer("prometheus")` calls return one of these pointing at the same
+/// global instance, so events emitted by the channel server, agent loop, and gateway
+/// all land in the same registry that `/metrics` encodes.
+///
+/// Tests use `PrometheusObserver::new()` directly and are unaffected.
+pub struct SharedPrometheusObserver(pub Arc<PrometheusObserver>);
+
+impl Observer for SharedPrometheusObserver {
+    fn record_event(&self, event: &ObserverEvent) {
+        self.0.record_event(event);
+    }
+
+    fn record_metric(&self, metric: &ObserverMetric) {
+        self.0.record_metric(metric);
+    }
+
+    fn name(&self) -> &str {
+        "prometheus"
+    }
+
+    /// Delegate to the inner observer so that `handle_metrics` can downcast
+    /// through `BroadcastObserver` → `SharedPrometheusObserver` → `PrometheusObserver`.
+    fn as_any(&self) -> &dyn std::any::Any {
+        self.0.as_any()
     }
 }
 
