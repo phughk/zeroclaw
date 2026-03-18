@@ -137,6 +137,19 @@ impl crate::observability::Observer for BroadcastObserver {
                 "cost_usd": cost_usd,
                 "timestamp": chrono::Utc::now().to_rfc3339(),
             }),
+            crate::observability::ObserverEvent::FileIo {
+                path,
+                operation,
+                bytes,
+                prompt_type,
+            } => serde_json::json!({
+                "type": "file_io",
+                "path": path,
+                "operation": operation,
+                "bytes": bytes,
+                "prompt_type": prompt_type.as_str(),
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            }),
             _ => return, // Skip events we don't broadcast
         };
 

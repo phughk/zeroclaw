@@ -125,6 +125,17 @@ pub enum ObserverEvent {
         /// Human-readable error description. Must not contain secrets or tokens.
         message: String,
     },
+    /// A file was read or written by a file tool.
+    FileIo {
+        /// The file path accessed.
+        path: String,
+        /// `"read"` or `"write"`.
+        operation: String,
+        /// Number of bytes read or written.
+        bytes: u64,
+        /// The prompt context that triggered the file I/O.
+        prompt_type: PromptType,
+    },
     /// A hand has started execution.
     HandStarted { hand_name: String },
     /// A hand has completed execution successfully.

@@ -93,6 +93,14 @@ impl Observer for LogObserver {
                     "llm.response"
                 );
             }
+            ObserverEvent::FileIo {
+                path,
+                operation,
+                bytes,
+                prompt_type,
+            } => {
+                info!(path = %path, operation = %operation, bytes = bytes, prompt_type = %prompt_type, "file.io");
+            }
             ObserverEvent::HandStarted { hand_name } => {
                 info!(hand = %hand_name, "hand.started");
             }

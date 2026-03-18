@@ -31,6 +31,9 @@ pub struct PrometheusObserver {
     active_sessions: GaugeVec,
     queue_depth: GaugeVec,
 
+    // File I/O
+    file_io_bytes: IntCounterVec,
+
     // Hands
     hand_runs: IntCounterVec,
     hand_duration: HistogramVec,
@@ -183,6 +186,15 @@ impl PrometheusObserver {
         )
         .expect("valid metric");
 
+        let file_io_bytes = IntCounterVec::new(
+            prometheus::Opts::new(
+                "zeroclaw_file_io_bytes_total",
+                "Total bytes transferred in file I/O operations",
+            ),
+            &["filename", "operation", "prompt_type"],
+        )
+        .expect("valid metric");
+
         // Register all metrics
         registry.register(Box::new(agent_starts.clone())).ok();
         registry.register(Box::new(llm_requests.clone())).ok();
@@ -206,6 +218,7 @@ impl PrometheusObserver {
         registry.register(Box::new(hand_runs.clone())).ok();
         registry.register(Box::new(hand_duration.clone())).ok();
         registry.register(Box::new(hand_findings.clone())).ok();
+        registry.register(Box::new(file_io_bytes.clone())).ok();
 
         Self {
             registry,
@@ -229,6 +242,7 @@ impl PrometheusObserver {
             hand_runs,
             hand_duration,
             hand_findings,
+            file_io_bytes,
         }
     }
 
@@ -330,6 +344,16 @@ impl Observer for PrometheusObserver {
                 message: _,
             } => {
                 self.errors.with_label_values(&[component]).inc();
+            }
+            ObserverEvent::FileIo {
+                path,
+                operation,
+                bytes,
+                prompt_type,
+            } => {
+                self.file_io_bytes
+                    .with_label_values(&[path.as_str(), operation.as_str(), prompt_type.as_str()])
+                    .inc_by(*bytes);
             }
             ObserverEvent::HandStarted { hand_name } => {
                 self.hand_runs

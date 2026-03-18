@@ -2213,6 +2213,46 @@ pub(crate) async fn agent_turn(
     .await
 }
 
+/// Extract a `FileIo` observer event from a successful file tool result.
+///
+/// Returns `None` for non-file tools or when the path argument is missing.
+fn extract_file_io_event(
+    tool_name: &str,
+    args: &serde_json::Value,
+    output: &str,
+    prompt_type: crate::observability::PromptType,
+) -> Option<ObserverEvent> {
+    let path = args.get("path").and_then(|v| v.as_str())?.to_string();
+    let (operation, bytes): (&str, u64) = match tool_name {
+        "file_write" => {
+            let bytes = args
+                .get("content")
+                .and_then(|v| v.as_str())
+                .map(|s| s.len() as u64)
+                .unwrap_or(0);
+            ("write", bytes)
+        }
+        "file_edit" => {
+            // Output format: "Edited {path}: replaced 1 occurrence (N bytes)"
+            let bytes = output
+                .rsplit('(')
+                .next()
+                .and_then(|s| s.split_once(" bytes)"))
+                .and_then(|(n, _)| n.trim().parse::<u64>().ok())
+                .unwrap_or(0);
+            ("write", bytes)
+        }
+        "file_read" => ("read", output.len() as u64),
+        _ => return None,
+    };
+    Some(ObserverEvent::FileIo {
+        path,
+        operation: operation.to_string(),
+        bytes,
+        prompt_type,
+    })
+}
+
 async fn execute_one_tool(
     call_name: &str,
     call_arguments: serde_json::Value,
@@ -2253,6 +2293,7 @@ async fn execute_one_tool(
         });
     };
 
+    let args_for_file_io = call_arguments.clone();
     let tool_future = tool.execute(call_arguments);
     let tool_result = if let Some(token) = cancellation_token {
         tokio::select! {
@@ -2273,6 +2314,11 @@ async fn execute_one_tool(
                 prompt_type,
             });
             if r.success {
+                if let Some(file_event) =
+                    extract_file_io_event(call_name, &args_for_file_io, &r.output, prompt_type)
+                {
+                    observer.record_event(&file_event);
+                }
                 Ok(ToolExecutionOutcome {
                     output: scrub_credentials(&r.output),
                     success: true,

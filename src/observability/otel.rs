@@ -437,6 +437,7 @@ impl Observer for OtelObserver {
                     .record(secs, &[KeyValue::new("hand", hand_name.clone())]);
             }
             ObserverEvent::CacheHit { .. } | ObserverEvent::CacheMiss { .. } => {}
+            ObserverEvent::FileIo { .. } => {}
         }
     }
 
