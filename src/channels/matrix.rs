@@ -22,21 +22,29 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex, OnceCell, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 
 /// Matrix channel for Matrix Client-Server API.
 /// Uses matrix-sdk for reliable sync and encrypted-room decryption.
 #[derive(Clone)]
 pub struct MatrixChannel {
     homeserver: String,
-    access_token: String,
+    /// Current access token; shared across clones so re-login updates all handles.
+    access_token: Arc<RwLock<String>>,
+    /// Matrix username for password-based login (e.g. `"@bot:matrix.org"` or `"bot"`).
+    username: Option<String>,
+    /// Matrix password; used with `username` to obtain and refresh the access token.
+    password: Option<String>,
+    /// Recovery key (security phrase) for E2EE key backup restoration.
+    recovery_key: Option<String>,
     room_id: String,
     allowed_users: Vec<String>,
     session_owner_hint: Option<String>,
     session_device_id_hint: Option<String>,
     zeroclaw_dir: Option<PathBuf>,
     resolved_room_id_cache: Arc<RwLock<Option<String>>>,
-    sdk_client: Arc<OnceCell<MatrixSdkClient>>,
+    /// Lazily-initialised SDK client; cleared on re-login so it picks up the new token.
+    sdk_client: Arc<RwLock<Option<MatrixSdkClient>>>,
     http_client: Client,
     reaction_events: Arc<RwLock<HashMap<String, String>>>,
     voice_mode: Arc<AtomicBool>,
@@ -108,6 +116,15 @@ struct RoomAliasResponse {
     room_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct LoginResponse {
+    access_token: String,
+    #[serde(default)]
+    device_id: Option<String>,
+    #[serde(default)]
+    user_id: Option<String>,
+}
+
 impl MatrixChannel {
     fn normalize_optional_field(value: Option<String>) -> Option<String> {
         value
@@ -152,6 +169,33 @@ impl MatrixChannel {
         device_id_hint: Option<String>,
         zeroclaw_dir: Option<PathBuf>,
     ) -> Self {
+        Self::new_with_credentials(
+            homeserver,
+            access_token,
+            None,
+            None,
+            None,
+            room_id,
+            allowed_users,
+            owner_hint,
+            device_id_hint,
+            zeroclaw_dir,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_credentials(
+        homeserver: String,
+        access_token: String,
+        username: Option<String>,
+        password: Option<String>,
+        recovery_key: Option<String>,
+        room_id: String,
+        allowed_users: Vec<String>,
+        owner_hint: Option<String>,
+        device_id_hint: Option<String>,
+        zeroclaw_dir: Option<PathBuf>,
+    ) -> Self {
         let homeserver = homeserver.trim_end_matches('/').to_string();
         let access_token = access_token.trim().to_string();
         let room_id = room_id.trim().to_string();
@@ -163,14 +207,17 @@ impl MatrixChannel {
 
         Self {
             homeserver,
-            access_token,
+            access_token: Arc::new(RwLock::new(access_token)),
+            username: Self::normalize_optional_field(username),
+            password: Self::normalize_optional_field(password),
+            recovery_key: Self::normalize_optional_field(recovery_key),
             room_id,
             allowed_users,
             session_owner_hint: Self::normalize_optional_field(owner_hint),
             session_device_id_hint: Self::normalize_optional_field(device_id_hint),
             zeroclaw_dir,
             resolved_room_id_cache: Arc::new(RwLock::new(None)),
-            sdk_client: Arc::new(OnceCell::new()),
+            sdk_client: Arc::new(RwLock::new(None)),
             http_client: Client::new(),
             reaction_events: Arc::new(RwLock::new(HashMap::new())),
             voice_mode: Arc::new(AtomicBool::new(false)),
@@ -198,8 +245,115 @@ impl MatrixChannel {
         encoded
     }
 
-    fn auth_header_value(&self) -> String {
-        format!("Bearer {}", self.access_token)
+    async fn current_access_token(&self) -> String {
+        self.access_token.read().await.clone()
+    }
+
+    async fn auth_header_value(&self) -> String {
+        format!("Bearer {}", self.current_access_token().await)
+    }
+
+    /// Perform a password login and return the fresh access token.
+    async fn login_with_password(&self) -> anyhow::Result<String> {
+        let username = self
+            .username
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("Matrix: username is required for password login"))?;
+        let password = self
+            .password
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("Matrix: password is required for password login"))?;
+
+        let url = format!("{}/_matrix/client/v3/login", self.homeserver);
+        let mut body = serde_json::json!({
+            "type": "m.login.password",
+            "identifier": {
+                "type": "m.id.user",
+                "user": username
+            },
+            "password": password
+        });
+        // Re-use an existing device ID if known so the server doesn't create a new device on
+        // every restart.
+        if let Some(ref device_id) = self.session_device_id_hint {
+            body["device_id"] = serde_json::Value::String(device_id.clone());
+        }
+
+        let resp = self
+            .http_client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("Matrix login request failed: {e}"))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let err = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Matrix login failed ({status}): {err}");
+        }
+
+        let login_resp: LoginResponse = resp
+            .json()
+            .await
+            .map_err(|e| anyhow::anyhow!("Matrix login response parse error: {e}"))?;
+
+        // Persist the user_id hint if the server returned one and we don't have one yet.
+        if let Some(ref uid) = login_resp.user_id {
+            tracing::info!("Matrix: logged in as {}", crate::security::redact(uid));
+        }
+
+        Ok(login_resp.access_token)
+    }
+
+    /// Ensure a valid access token is stored.
+    ///
+    /// If the stored token is empty or `whoami` returns an auth error, attempt a
+    /// password login.  On success the new token is written back into `self.access_token`
+    /// and the cached SDK client is cleared so the next call to `matrix_client()` will
+    /// re-initialise it with the fresh token.
+    async fn ensure_access_token(&self) -> anyhow::Result<()> {
+        let current = self.current_access_token().await;
+        let needs_login = if current.is_empty() {
+            tracing::info!("Matrix: no access token configured; logging in with username/password");
+            true
+        } else {
+            // Quick validity probe — a 401 means the token expired.
+            let url = format!("{}/_matrix/client/v3/account/whoami", self.homeserver);
+            match self
+                .http_client
+                .get(&url)
+                .header("Authorization", format!("Bearer {current}"))
+                .send()
+                .await
+            {
+                Ok(r) if r.status() == reqwest::StatusCode::UNAUTHORIZED => {
+                    tracing::warn!("Matrix: access token expired; re-authenticating");
+                    true
+                }
+                Ok(_) => false,
+                Err(e) => {
+                    tracing::warn!("Matrix: whoami probe failed ({e}); assuming token is still valid");
+                    false
+                }
+            }
+        };
+
+        if needs_login {
+            if self.username.is_none() || self.password.is_none() {
+                anyhow::bail!(
+                    "Matrix: access token is missing or expired and no username/password is \
+                     configured for automatic re-login. Provide `username` and `password` in the \
+                     Matrix channel config."
+                );
+            }
+            let new_token = self.login_with_password().await?;
+            *self.access_token.write().await = new_token;
+            // Drop the cached SDK client so matrix_client() re-initialises with the new token.
+            *self.sdk_client.write().await = None;
+        }
+
+        Ok(())
     }
 
     fn matrix_store_dir(&self) -> Option<PathBuf> {
@@ -271,7 +425,7 @@ impl MatrixChannel {
         let resp = self
             .http_client
             .get(&url)
-            .header("Authorization", self.auth_header_value())
+            .header("Authorization", self.auth_header_value().await)
             .send()
             .await?;
 
@@ -288,105 +442,133 @@ impl MatrixChannel {
     }
 
     async fn matrix_client(&self) -> anyhow::Result<MatrixSdkClient> {
-        let client = self
-            .sdk_client
-            .get_or_try_init(|| async {
-                let identity = self.get_my_identity().await;
-                let whoami = match identity {
-                    Ok(whoami) => Some(whoami),
-                    Err(error) => {
-                        if self.session_owner_hint.is_some() && self.session_device_id_hint.is_some()
-                        {
-                            tracing::warn!(
-                                "Matrix whoami failed; falling back to configured session hints for E2EE session restore: {error}"
-                            );
-                            None
-                        } else {
-                            return Err(error);
-                        }
-                    }
-                };
+        // Fast path: client already initialised.
+        {
+            let guard = self.sdk_client.read().await;
+            if let Some(client) = guard.as_ref() {
+                return Ok(client.clone());
+            }
+        }
 
-                let resolved_user_id = if let Some(whoami) = whoami.as_ref() {
-                    if let Some(hinted) = self.session_owner_hint.as_ref() {
-                        if hinted != &whoami.user_id {
-                            tracing::warn!(
-                                "Matrix configured user_id '{}' does not match whoami '{}'; using whoami.",
-                                crate::security::redact(hinted),
-                                crate::security::redact(&whoami.user_id)
-                            );
-                        }
-                    }
-                    whoami.user_id.clone()
+        // Ensure we have a valid access token before building the SDK client.
+        self.ensure_access_token().await?;
+
+        // Slow path: initialise the SDK client under an exclusive write lock.
+        let mut guard = self.sdk_client.write().await;
+        // Double-checked: another task may have initialised while we waited.
+        if let Some(client) = guard.as_ref() {
+            return Ok(client.clone());
+        }
+
+        let client = self.init_sdk_client().await?;
+        *guard = Some(client.clone());
+        Ok(client)
+    }
+
+    async fn init_sdk_client(&self) -> anyhow::Result<MatrixSdkClient> {
+        let identity = self.get_my_identity().await;
+        let whoami = match identity {
+            Ok(whoami) => Some(whoami),
+            Err(error) => {
+                if self.session_owner_hint.is_some() && self.session_device_id_hint.is_some() {
+                    tracing::warn!(
+                        "Matrix whoami failed; falling back to configured session hints for E2EE session restore: {error}"
+                    );
+                    None
                 } else {
-                    self.session_owner_hint.clone().ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "Matrix session restore requires user_id when whoami is unavailable"
-                        )
-                    })?
-                };
-
-                let resolved_device_id = match (whoami.as_ref(), self.session_device_id_hint.as_ref()) {
-                    (Some(whoami), Some(hinted)) => {
-                        if let Some(whoami_device_id) = whoami.device_id.as_ref() {
-                            if whoami_device_id != hinted {
-                                tracing::warn!(
-                                    "Matrix configured device_id '{}' does not match whoami '{}'; using whoami.",
-                                    crate::security::redact(hinted),
-                                    crate::security::redact(whoami_device_id)
-                                );
-                            }
-                            whoami_device_id.clone()
-                        } else {
-                            hinted.clone()
-                        }
-                    }
-                    (Some(whoami), None) => whoami.device_id.clone().ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "Matrix whoami response did not include device_id. Set channels.matrix.device_id to enable E2EE session restore."
-                        )
-                    })?,
-                    (None, Some(hinted)) => hinted.clone(),
-                    (None, None) => {
-                        return Err(anyhow::anyhow!(
-                            "Matrix E2EE session restore requires device_id when whoami is unavailable"
-                        ));
-                    }
-                };
-
-                let mut client_builder = MatrixSdkClient::builder().homeserver_url(&self.homeserver);
-
-                if let Some(store_dir) = self.matrix_store_dir() {
-                    tokio::fs::create_dir_all(&store_dir).await.map_err(|error| {
-                        anyhow::anyhow!(
-                            "Matrix failed to initialize persistent store directory at '{}': {error}",
-                            store_dir.display()
-                        )
-                    })?;
-                    client_builder = client_builder.sqlite_store(&store_dir, None);
+                    return Err(error);
                 }
+            }
+        };
 
-                let client = client_builder.build().await?;
+        let resolved_user_id = if let Some(whoami) = whoami.as_ref() {
+            if let Some(hinted) = self.session_owner_hint.as_ref() {
+                if hinted != &whoami.user_id {
+                    tracing::warn!(
+                        "Matrix configured user_id '{}' does not match whoami '{}'; using whoami.",
+                        crate::security::redact(hinted),
+                        crate::security::redact(&whoami.user_id)
+                    );
+                }
+            }
+            whoami.user_id.clone()
+        } else {
+            self.session_owner_hint.clone().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Matrix session restore requires user_id when whoami is unavailable"
+                )
+            })?
+        };
 
-                let user_id: OwnedUserId = resolved_user_id.parse()?;
-                let session = MatrixSession {
-                    meta: SessionMeta {
-                        user_id,
-                        device_id: resolved_device_id.into(),
-                    },
-                    tokens: SessionTokens {
-                        access_token: self.access_token.clone(),
-                        refresh_token: None,
-                    },
-                };
+        let resolved_device_id =
+            match (whoami.as_ref(), self.session_device_id_hint.as_ref()) {
+                (Some(whoami), Some(hinted)) => {
+                    if let Some(whoami_device_id) = whoami.device_id.as_ref() {
+                        if whoami_device_id != hinted {
+                            tracing::warn!(
+                                "Matrix configured device_id '{}' does not match whoami '{}'; using whoami.",
+                                crate::security::redact(hinted),
+                                crate::security::redact(whoami_device_id)
+                            );
+                        }
+                        whoami_device_id.clone()
+                    } else {
+                        hinted.clone()
+                    }
+                }
+                (Some(whoami), None) => whoami.device_id.clone().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Matrix whoami response did not include device_id. Set channels.matrix.device_id to enable E2EE session restore."
+                    )
+                })?,
+                (None, Some(hinted)) => hinted.clone(),
+                (None, None) => {
+                    return Err(anyhow::anyhow!(
+                        "Matrix E2EE session restore requires device_id when whoami is unavailable"
+                    ));
+                }
+            };
 
-                client.restore_session(session).await?;
+        let mut client_builder =
+            MatrixSdkClient::builder().homeserver_url(&self.homeserver);
 
-                Ok::<MatrixSdkClient, anyhow::Error>(client)
-            })
-            .await?;
+        if let Some(store_dir) = self.matrix_store_dir() {
+            tokio::fs::create_dir_all(&store_dir).await.map_err(|error| {
+                anyhow::anyhow!(
+                    "Matrix failed to initialize persistent store directory at '{}': {error}",
+                    store_dir.display()
+                )
+            })?;
+            client_builder = client_builder.sqlite_store(&store_dir, None);
+        }
 
-        Ok(client.clone())
+        let client = client_builder.build().await?;
+
+        let user_id: OwnedUserId = resolved_user_id.parse()?;
+        let session = MatrixSession {
+            meta: SessionMeta {
+                user_id,
+                device_id: resolved_device_id.into(),
+            },
+            tokens: SessionTokens {
+                access_token: self.current_access_token().await,
+                refresh_token: None,
+            },
+        };
+
+        client.restore_session(session).await?;
+
+        // Attempt E2EE key-backup recovery using the configured recovery key.
+        if let Some(ref key) = self.recovery_key {
+            match client.encryption().recovery().recover(key).await {
+                Ok(()) => tracing::info!("Matrix: E2EE key backup recovered successfully"),
+                Err(e) => tracing::warn!(
+                    "Matrix: E2EE key backup recovery failed (non-fatal): {e}"
+                ),
+            }
+        }
+
+        Ok(client)
     }
 
     async fn resolve_room_id(&self) -> anyhow::Result<String> {
@@ -406,7 +588,7 @@ impl MatrixChannel {
             let resp = self
                 .http_client
                 .get(&url)
-                .header("Authorization", self.auth_header_value())
+                .header("Authorization", self.auth_header_value().await)
                 .send()
                 .await?;
 
@@ -434,7 +616,7 @@ impl MatrixChannel {
         let resp = self
             .http_client
             .get(&url)
-            .header("Authorization", self.auth_header_value())
+            .header("Authorization", self.auth_header_value().await)
             .send()
             .await?;
 
@@ -456,7 +638,7 @@ impl MatrixChannel {
         let resp = self
             .http_client
             .get(&url)
-            .header("Authorization", self.auth_header_value())
+            .header("Authorization", self.auth_header_value().await)
             .send()
             .await?;
 
@@ -613,7 +795,7 @@ impl Channel for MatrixChannel {
                     if let Ok(resp) = self
                         .http_client
                         .post(&upload_url)
-                        .header("Authorization", self.auth_header_value())
+                        .header("Authorization", self.auth_header_value().await)
                         .header("Content-Type", "audio/mpeg")
                         .body(audio_data)
                         .send()
@@ -643,7 +825,7 @@ impl Channel for MatrixChannel {
                                     let _ = self
                                         .http_client
                                         .put(&send_url)
-                                        .header("Authorization", self.auth_header_value())
+                                        .header("Authorization", self.auth_header_value().await)
                                         .json(&audio_msg)
                                         .send()
                                         .await;
@@ -659,6 +841,8 @@ impl Channel for MatrixChannel {
     }
 
     async fn listen(&self, tx: mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {
+        // Obtain/refresh the access token before any auth-dependent calls.
+        self.ensure_access_token().await?;
         let target_room_id = self.target_room_id().await?;
         self.ensure_room_supported(&target_room_id).await?;
 
@@ -777,7 +961,7 @@ impl Channel for MatrixChannel {
                     let client = reqwest::Client::new();
                     match client
                         .get(&url)
-                        .header("Authorization", format!("Bearer {}", access_token))
+                        .header("Authorization", format!("Bearer {}", access_token.read().await))
                         .send()
                         .await
                     {
@@ -923,6 +1107,10 @@ impl Channel for MatrixChannel {
     }
 
     async fn health_check(&self) -> bool {
+        if self.ensure_access_token().await.is_err() {
+            return false;
+        }
+
         let Ok(room_id) = self.target_room_id().await else {
             return false;
         };
@@ -1003,7 +1191,7 @@ impl Channel for MatrixChannel {
         let resp = self
             .http_client
             .get(&url)
-            .header("Authorization", self.auth_header_value())
+            .header("Authorization", self.auth_header_value().await)
             .send()
             .await?;
 
@@ -1035,7 +1223,7 @@ impl Channel for MatrixChannel {
         let resp = self
             .http_client
             .put(&put_url)
-            .header("Authorization", self.auth_header_value())
+            .header("Authorization", self.auth_header_value().await)
             .json(&body)
             .send()
             .await?;
@@ -1059,7 +1247,7 @@ impl Channel for MatrixChannel {
         let resp = self
             .http_client
             .get(&url)
-            .header("Authorization", self.auth_header_value())
+            .header("Authorization", self.auth_header_value().await)
             .send()
             .await?;
 
@@ -1094,7 +1282,7 @@ impl Channel for MatrixChannel {
         let resp = self
             .http_client
             .put(&put_url)
-            .header("Authorization", self.auth_header_value())
+            .header("Authorization", self.auth_header_value().await)
             .json(&body)
             .send()
             .await?;
@@ -1125,7 +1313,7 @@ mod tests {
     fn creates_with_correct_fields() {
         let ch = make_channel();
         assert_eq!(ch.homeserver, "https://matrix.org");
-        assert_eq!(ch.access_token, "syt_test_token");
+        assert_eq!(*ch.access_token.try_read().unwrap(), "syt_test_token");
         assert_eq!(ch.room_id, "!room:matrix.org");
         assert_eq!(ch.allowed_users.len(), 1);
     }
@@ -1171,7 +1359,7 @@ mod tests {
             "!r:m".to_string(),
             vec![],
         );
-        assert_eq!(ch.access_token, "syt_test_token");
+        assert_eq!(*ch.access_token.try_read().unwrap(), "syt_test_token");
     }
 
     #[test]

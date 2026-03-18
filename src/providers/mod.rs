@@ -46,7 +46,7 @@ use reliable::ReliableProvider;
 use serde::Deserialize;
 use std::path::PathBuf;
 
-const MAX_API_ERROR_CHARS: usize = 200;
+const MAX_API_ERROR_CHARS: usize = 1000;
 const MINIMAX_INTL_BASE_URL: &str = "https://api.minimax.io/v1";
 const MINIMAX_CN_BASE_URL: &str = "https://api.minimaxi.com/v1";
 const MINIMAX_OAUTH_GLOBAL_TOKEN_ENDPOINT: &str = "https://api.minimax.io/oauth/token";

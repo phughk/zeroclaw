@@ -4669,7 +4669,23 @@ pub struct MatrixConfig {
     /// Matrix homeserver URL (e.g. `"https://matrix.org"`).
     pub homeserver: String,
     /// Matrix access token for the bot account.
+    /// Optional when `username` and `password` are provided — the channel will log
+    /// in automatically and obtain a fresh token on startup or after expiry.
+    #[serde(default)]
     pub access_token: String,
+    /// Matrix username for password-based login (e.g. `"@bot:matrix.org"` or `"bot"`).
+    /// When set together with `password`, the channel will authenticate via the
+    /// Matrix password-login flow instead of relying on a long-lived static token.
+    #[serde(default)]
+    pub username: Option<String>,
+    /// Matrix password for password-based login. Stored encrypted.
+    #[serde(default)]
+    pub password: Option<String>,
+    /// Recovery key (security phrase) for E2EE key-backup restoration.
+    /// When provided, the channel calls `recovery().recover()` after each session
+    /// restore so encrypted room history remains readable. Stored encrypted.
+    #[serde(default)]
+    pub recovery_key: Option<String>,
     /// Optional Matrix user ID (e.g. `"@bot:matrix.org"`).
     #[serde(default)]
     pub user_id: Option<String>,
@@ -6610,6 +6626,16 @@ impl Config {
                     &mut mx.access_token,
                     "config.channels_config.matrix.access_token",
                 )?;
+                decrypt_optional_secret(
+                    &store,
+                    &mut mx.password,
+                    "config.channels_config.matrix.password",
+                )?;
+                decrypt_optional_secret(
+                    &store,
+                    &mut mx.recovery_key,
+                    "config.channels_config.matrix.recovery_key",
+                )?;
             }
             if let Some(ref mut wa) = config.channels_config.whatsapp {
                 decrypt_optional_secret(
@@ -7784,6 +7810,16 @@ impl Config {
                 &store,
                 &mut mx.access_token,
                 "config.channels_config.matrix.access_token",
+            )?;
+            encrypt_optional_secret(
+                &store,
+                &mut mx.password,
+                "config.channels_config.matrix.password",
+            )?;
+            encrypt_optional_secret(
+                &store,
+                &mut mx.recovery_key,
+                "config.channels_config.matrix.recovery_key",
             )?;
         }
         if let Some(ref mut wa) = config_to_save.channels_config.whatsapp {
@@ -9028,6 +9064,9 @@ tool_dispatcher = "xml"
         let mc = MatrixConfig {
             homeserver: "https://matrix.org".into(),
             access_token: "syt_token_abc".into(),
+            username: None,
+            password: None,
+            recovery_key: None,
             user_id: Some("@bot:matrix.org".into()),
             device_id: Some("DEVICE123".into()),
             room_id: "!room123:matrix.org".into(),
@@ -9048,6 +9087,9 @@ tool_dispatcher = "xml"
         let mc = MatrixConfig {
             homeserver: "https://synapse.local:8448".into(),
             access_token: "tok".into(),
+            username: None,
+            password: None,
+            recovery_key: None,
             user_id: None,
             device_id: None,
             room_id: "!abc:synapse.local".into(),
@@ -9137,6 +9179,9 @@ allowed_users = ["@ops:matrix.org"]
             matrix: Some(MatrixConfig {
                 homeserver: "https://m.org".into(),
                 access_token: "tok".into(),
+                username: None,
+                password: None,
+                recovery_key: None,
                 user_id: None,
                 device_id: None,
                 room_id: "!r:m".into(),

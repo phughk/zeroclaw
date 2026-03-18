@@ -3349,9 +3349,12 @@ fn collect_configured_channels(
     if let Some(ref mx) = config.channels_config.matrix {
         channels.push(ConfiguredChannel {
             display_name: "Matrix",
-            channel: Arc::new(MatrixChannel::new_with_session_hint_and_zeroclaw_dir(
+            channel: Arc::new(MatrixChannel::new_with_credentials(
                 mx.homeserver.clone(),
                 mx.access_token.clone(),
+                mx.username.clone(),
+                mx.password.clone(),
+                mx.recovery_key.clone(),
                 mx.room_id.clone(),
                 mx.allowed_users.clone(),
                 mx.user_id.clone(),

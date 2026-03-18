@@ -27,7 +27,13 @@ RUN npm run build
 FROM rust:1.94-bookworm AS builder
 
 WORKDIR /app
-ARG ZEROCLAW_CARGO_FEATURES="observability-otel"
+ARG ZEROCLAW_CARGO_FEATURES="observability-otel,channel-matrix"
+
+# Override memory-intensive release profile settings for cross-compilation/CI environments.
+# lto=fat + codegen-units=1 requires the linker to hold the entire program's LLVM IR in memory,
+# which OOM-kills on Colima/limited-RAM builders. thin LTO still optimises well and uses far less RAM.
+ENV CARGO_PROFILE_RELEASE_LTO=thin
+ENV CARGO_PROFILE_RELEASE_CODEGEN_UNITS=4
 
 # Install build dependencies
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -45,6 +51,17 @@ RUN mkdir -p src benches crates/robot-kit/src \
     && echo "" > src/lib.rs \
     && echo "fn main() {}" > benches/agent_benchmarks.rs \
     && echo "pub fn placeholder() {}" > crates/robot-kit/src/lib.rs
+# Fetch deps and patch matrix-sdk recursion limit (0.16.0 ships without one; Rust 1.84+ overflows at default 128)
+RUN --mount=type=cache,id=zeroclaw-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=zeroclaw-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    cargo fetch --locked && \
+    find /usr/local/cargo/registry/src -path "*/matrix-sdk-0.16*/src/lib.rs" | while IFS= read -r f; do \
+        if grep -q 'recursion_limit' "$f"; then \
+            sed -i 's/#!\[recursion_limit = "[0-9]*"\]/#![recursion_limit = "512"]/' "$f"; \
+        else \
+            sed -i '1s/^/#![recursion_limit = "512"]\n/' "$f"; \
+        fi; \
+    done
 RUN --mount=type=cache,id=zeroclaw-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=zeroclaw-cargo-git,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=zeroclaw-target,target=/app/target,sharing=locked \
