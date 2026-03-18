@@ -27,7 +27,7 @@ RUN npm run build
 FROM rust:1.94-bookworm AS builder
 
 WORKDIR /app
-ARG ZEROCLAW_CARGO_FEATURES="observability-otel,channel-matrix"
+ARG ZEROCLAW_CARGO_FEATURES="observability-otel,observability-prometheus,channel-matrix,metrics"
 
 # Override memory-intensive release profile settings for cross-compilation/CI environments.
 # lto=fat + codegen-units=1 requires the linker to hold the entire program's LLVM IR in memory,

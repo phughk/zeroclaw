@@ -153,6 +153,6 @@ impl crate::observability::Observer for BroadcastObserver {
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
-        self
+        self.inner.as_any()
     }
 }
