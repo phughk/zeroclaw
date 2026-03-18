@@ -428,6 +428,7 @@ impl Observer for OtelObserver {
                 self.hand_duration
                     .record(secs, &[KeyValue::new("hand", hand_name.clone())]);
             }
+            ObserverEvent::CacheHit { .. } | ObserverEvent::CacheMiss { .. } => {}
         }
     }
 

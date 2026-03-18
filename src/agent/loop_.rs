@@ -3236,7 +3236,7 @@ pub async fn run(
         .and_then(Result::ok)
         .filter(|r: &crate::rag::HardwareRag| !r.is_empty());
     if let Some(ref rag) = hardware_rag {
-        tracing::info!(chunks = rag.len(), "Hardware RAG loaded");
+        tracing::info!(chunks = rag.len() as u64, "Hardware RAG loaded");
     }
 
     let board_names: Vec<String> = config

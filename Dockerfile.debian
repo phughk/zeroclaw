@@ -27,7 +27,7 @@ RUN npm run build
 FROM rust:1.94-bookworm AS builder
 
 WORKDIR /app
-ARG ZEROCLAW_CARGO_FEATURES=""
+ARG ZEROCLAW_CARGO_FEATURES="observability-otel"
 
 # Install build dependencies
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -59,9 +59,9 @@ RUN rm -rf src benches crates/robot-kit/src
 COPY src/ src/
 COPY benches/ benches/
 COPY crates/ crates/
-COPY firmware/ firmware/
+# COPY firmware/ firmware/
 COPY --from=web-builder /web/dist web/dist
-RUN touch src/main.rs
+RUN find src -name "*.rs" -exec touch {} +
 RUN --mount=type=cache,id=zeroclaw-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=zeroclaw-cargo-git,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=zeroclaw-target,target=/app/target,sharing=locked \
@@ -94,6 +94,7 @@ RUN mkdir -p /zeroclaw-data/.zeroclaw /zeroclaw-data/workspace && \
 
 # ── Stage 2: Runtime (Debian with shell) ─────────────────────
 FROM debian:bookworm-slim AS runtime
+LABEL mydebian=true
 
 # Install essential tools for agent shell operations
 RUN apt-get update && apt-get install -y --no-install-recommends \

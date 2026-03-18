@@ -36,6 +36,7 @@ credentials.json
 
 # Skill eval workspaces (test outputs, transcripts, grading)
 .claude/skills/*-workspace/
+.claude/settings.local.json
 
 # Local state backups
 .local-state-backups/

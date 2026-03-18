@@ -1,0 +1,10 @@
+version: '3'
+
+vars:
+  IMAGE_TAG: zeroclaw:mydebian
+
+tasks:
+  build:
+    desc: Build the Debian variant of the ZeroClaw image
+    cmds:
+      - docker build -f Dockerfile.debian -t {{.IMAGE_TAG}} .
