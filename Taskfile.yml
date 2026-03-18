@@ -7,4 +7,4 @@ tasks:
   build:
     desc: Build the Debian variant of the ZeroClaw image
     cmds:
-      - docker build -f Dockerfile.debian -t {{.IMAGE_TAG}} .
+      - docker build -f Dockerfile.mydebian -t {{.IMAGE_TAG}} .
