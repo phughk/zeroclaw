@@ -1,5 +1,48 @@
 use std::time::Duration;
 
+/// The source context that triggered a tool call.
+///
+/// Carried on [`ObserverEvent::ToolCall`] and [`ObserverEvent::ToolCallStart`] so that
+/// observers (Prometheus, OTel, logs) can slice metrics by call origin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptType {
+    /// Direct CLI / `run()` invocation.
+    Agent,
+    /// Incoming message via a channel (Telegram, Discord, Matrix, …).
+    Channel,
+    /// Scheduled cron job.
+    Cron,
+    /// Daemon heartbeat task.
+    Heartbeat,
+    /// HTTP webhook via the gateway REST endpoint.
+    Webhook,
+    /// WebSocket session (`Agent::turn()`).
+    Websocket,
+    /// Sub-agent spawned by the `delegate` tool.
+    Delegate,
+}
+
+impl PromptType {
+    /// Return the lowercase string label used in metrics and logs.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Channel => "channel",
+            Self::Cron => "cron",
+            Self::Heartbeat => "heartbeat",
+            Self::Webhook => "webhook",
+            Self::Websocket => "websocket",
+            Self::Delegate => "delegate",
+        }
+    }
+}
+
+impl std::fmt::Display for PromptType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Discrete events emitted by the agent runtime for observability.
 ///
 /// Each variant represents a lifecycle event that observers can record,
@@ -43,12 +86,14 @@ pub enum ObserverEvent {
     ToolCallStart {
         tool: String,
         arguments: Option<String>,
+        prompt_type: PromptType,
     },
     /// A tool call has completed with a success/failure outcome.
     ToolCall {
         tool: String,
         duration: Duration,
         success: bool,
+        prompt_type: PromptType,
     },
     /// The agent produced a final answer for the current user message.
     TurnComplete,
@@ -226,6 +271,7 @@ mod tests {
             tool: "shell".into(),
             duration: Duration::from_millis(10),
             success: true,
+            prompt_type: crate::observability::PromptType::Agent,
         };
         let metric = ObserverMetric::RequestLatency(Duration::from_millis(8));
 

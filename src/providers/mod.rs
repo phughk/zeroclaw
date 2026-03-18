@@ -3259,18 +3259,18 @@ mod tests {
 
     #[test]
     fn sanitize_truncates_long_error() {
-        let long = "a".repeat(400);
+        let long = "a".repeat(2000);
         let result = sanitize_api_error(&long);
-        assert!(result.len() <= 203);
+        assert!(result.len() <= 1003);
         assert!(result.ends_with("..."));
     }
 
     #[test]
     fn sanitize_truncates_after_scrub() {
-        let input = format!("{} sk-abcdef123456 {}", "a".repeat(190), "b".repeat(190));
+        let input = format!("{} sk-abcdef123456 {}", "a".repeat(600), "b".repeat(600));
         let result = sanitize_api_error(&input);
         assert!(!result.contains("sk-abcdef123456"));
-        assert!(result.len() <= 203);
+        assert!(result.len() <= 1003);
     }
 
     #[test]

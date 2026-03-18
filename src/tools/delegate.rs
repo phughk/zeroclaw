@@ -423,6 +423,7 @@ impl DelegateTool {
                 &[],
                 None,
                 None,
+                crate::observability::PromptType::Delegate,
             ),
         )
         .await;

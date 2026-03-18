@@ -470,6 +470,7 @@ impl Agent {
                         tool: call.name.clone(),
                         duration: start.elapsed(),
                         success: r.success,
+                        prompt_type: crate::observability::PromptType::Websocket,
                     });
                     if r.success {
                         r.output
@@ -482,6 +483,7 @@ impl Agent {
                         tool: call.name.clone(),
                         duration: start.elapsed(),
                         success: false,
+                        prompt_type: crate::observability::PromptType::Websocket,
                     });
                     format!("Error executing {}: {e}", call.name)
                 }

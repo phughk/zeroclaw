@@ -191,6 +191,7 @@ async fn run_agent_job(
                 false,
                 None,
                 job.allowed_tools.clone(),
+                crate::observability::PromptType::Cron,
             ))
             .await
         }

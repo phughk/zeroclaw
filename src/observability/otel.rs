@@ -296,6 +296,7 @@ impl Observer for OtelObserver {
                 tool,
                 duration,
                 success,
+                prompt_type,
             } => {
                 let secs = duration.as_secs_f64();
                 let start_time = SystemTime::now()
@@ -316,6 +317,7 @@ impl Observer for OtelObserver {
                             KeyValue::new("tool.name", tool.clone()),
                             KeyValue::new("tool.success", *success),
                             KeyValue::new("duration_s", secs),
+                            KeyValue::new("prompt_type", prompt_type.as_str()),
                         ]),
                 );
                 span.set_status(status);
@@ -324,10 +326,16 @@ impl Observer for OtelObserver {
                 let attrs = [
                     KeyValue::new("tool", tool.clone()),
                     KeyValue::new("success", success.to_string()),
+                    KeyValue::new("prompt_type", prompt_type.as_str()),
                 ];
                 self.tool_calls.add(1, &attrs);
-                self.tool_duration
-                    .record(secs, &[KeyValue::new("tool", tool.clone())]);
+                self.tool_duration.record(
+                    secs,
+                    &[
+                        KeyValue::new("tool", tool.clone()),
+                        KeyValue::new("prompt_type", prompt_type.as_str()),
+                    ],
+                );
             }
             ObserverEvent::ChannelMessage { channel, direction } => {
                 self.channel_messages.add(
@@ -552,16 +560,19 @@ mod tests {
         obs.record_event(&ObserverEvent::ToolCallStart {
             tool: "shell".into(),
             arguments: None,
+            prompt_type: crate::observability::PromptType::Agent,
         });
         obs.record_event(&ObserverEvent::ToolCall {
             tool: "shell".into(),
             duration: Duration::from_millis(10),
             success: true,
+            prompt_type: crate::observability::PromptType::Agent,
         });
         obs.record_event(&ObserverEvent::ToolCall {
             tool: "file_read".into(),
             duration: Duration::from_millis(5),
             success: false,
+            prompt_type: crate::observability::PromptType::Agent,
         });
         obs.record_event(&ObserverEvent::TurnComplete);
         obs.record_event(&ObserverEvent::ChannelMessage {

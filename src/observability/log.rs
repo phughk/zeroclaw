@@ -27,16 +27,17 @@ impl Observer for LogObserver {
                 let ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
                 info!(provider = %provider, model = %model, duration_ms = ms, tokens = ?tokens_used, cost_usd = ?cost_usd, "agent.end");
             }
-            ObserverEvent::ToolCallStart { tool, .. } => {
-                info!(tool = %tool, "tool.start");
+            ObserverEvent::ToolCallStart { tool, prompt_type, .. } => {
+                info!(tool = %tool, prompt_type = %prompt_type, "tool.start");
             }
             ObserverEvent::ToolCall {
                 tool,
                 duration,
                 success,
+                prompt_type,
             } => {
                 let ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
-                info!(tool = %tool, duration_ms = ms, success = success, "tool.call");
+                info!(tool = %tool, duration_ms = ms, success = success, prompt_type = %prompt_type, "tool.call");
             }
             ObserverEvent::TurnComplete => {
                 info!("turn.complete");
@@ -205,6 +206,7 @@ mod tests {
             tool: "shell".into(),
             duration: Duration::from_millis(10),
             success: false,
+            prompt_type: crate::observability::PromptType::Agent,
         });
         obs.record_event(&ObserverEvent::ChannelMessage {
             channel: "telegram".into(),

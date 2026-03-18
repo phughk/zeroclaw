@@ -40,6 +40,7 @@ impl Observer for VerboseObserver {
                 tool,
                 duration,
                 success,
+                ..
             } => {
                 let ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
                 eprintln!("< Tool {tool} (success={success}, duration_ms={ms})");
@@ -93,11 +94,13 @@ mod tests {
         obs.record_event(&ObserverEvent::ToolCallStart {
             tool: "shell".into(),
             arguments: None,
+            prompt_type: crate::observability::PromptType::Agent,
         });
         obs.record_event(&ObserverEvent::ToolCall {
             tool: "shell".into(),
             duration: Duration::from_millis(2),
             success: true,
+            prompt_type: crate::observability::PromptType::Agent,
         });
         obs.record_event(&ObserverEvent::TurnComplete);
     }

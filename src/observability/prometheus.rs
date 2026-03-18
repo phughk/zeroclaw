@@ -70,7 +70,7 @@ impl PrometheusObserver {
 
         let tool_calls = IntCounterVec::new(
             prometheus::Opts::new("zeroclaw_tool_calls_total", "Total tool calls"),
-            &["tool", "success"],
+            &["tool", "success", "prompt_type"],
         )
         .expect("valid metric");
 
@@ -127,7 +127,7 @@ impl PrometheusObserver {
                 "Tool execution duration in seconds",
             )
             .buckets(vec![0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0]),
-            &["tool"],
+            &["tool", "prompt_type"],
         )
         .expect("valid metric");
 
@@ -295,13 +295,14 @@ impl Observer for PrometheusObserver {
                 tool,
                 duration,
                 success,
+                prompt_type,
             } => {
                 let success_str = if *success { "true" } else { "false" };
                 self.tool_calls
-                    .with_label_values(&[tool.as_str(), success_str])
+                    .with_label_values(&[tool.as_str(), success_str, prompt_type.as_str()])
                     .inc();
                 self.tool_duration
-                    .with_label_values(&[tool.as_str()])
+                    .with_label_values(&[tool.as_str(), prompt_type.as_str()])
                     .observe(duration.as_secs_f64());
             }
             ObserverEvent::ChannelMessage { channel, direction } => {
@@ -479,11 +480,13 @@ mod tests {
             tool: "shell".into(),
             duration: Duration::from_millis(10),
             success: true,
+            prompt_type: crate::observability::PromptType::Agent,
         });
         obs.record_event(&ObserverEvent::ToolCall {
             tool: "file_read".into(),
             duration: Duration::from_millis(5),
             success: false,
+            prompt_type: crate::observability::PromptType::Agent,
         });
         obs.record_event(&ObserverEvent::ChannelMessage {
             channel: "telegram".into(),
@@ -517,6 +520,7 @@ mod tests {
             tool: "shell".into(),
             duration: Duration::from_millis(100),
             success: true,
+            prompt_type: crate::observability::PromptType::Agent,
         });
         obs.record_event(&ObserverEvent::HeartbeatTick);
         obs.record_metric(&ObserverMetric::RequestLatency(Duration::from_millis(250)));
@@ -548,21 +552,24 @@ mod tests {
             tool: "shell".into(),
             duration: Duration::from_millis(10),
             success: true,
+            prompt_type: crate::observability::PromptType::Agent,
         });
         obs.record_event(&ObserverEvent::ToolCall {
             tool: "shell".into(),
             duration: Duration::from_millis(10),
             success: true,
+            prompt_type: crate::observability::PromptType::Agent,
         });
         obs.record_event(&ObserverEvent::ToolCall {
             tool: "shell".into(),
             duration: Duration::from_millis(10),
             success: false,
+            prompt_type: crate::observability::PromptType::Agent,
         });
 
         let output = obs.encode();
-        assert!(output.contains(r#"zeroclaw_tool_calls_total{success="true",tool="shell"} 2"#));
-        assert!(output.contains(r#"zeroclaw_tool_calls_total{success="false",tool="shell"} 1"#));
+        assert!(output.contains(r#"zeroclaw_tool_calls_total{prompt_type="agent",success="true",tool="shell"} 2"#));
+        assert!(output.contains(r#"zeroclaw_tool_calls_total{prompt_type="agent",success="false",tool="shell"} 1"#));
     }
 
     #[test]

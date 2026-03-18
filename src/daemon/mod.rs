@@ -326,6 +326,7 @@ async fn run_heartbeat_worker(config: Config) -> Result<()> {
                 false,
                 None,
                 None,
+                crate::observability::PromptType::Heartbeat,
             ))
             .await
             {
@@ -374,6 +375,7 @@ async fn run_heartbeat_worker(config: Config) -> Result<()> {
                 false,
                 None,
                 None,
+                crate::observability::PromptType::Heartbeat,
             ))
             .await
             {

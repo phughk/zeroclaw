@@ -123,7 +123,7 @@ struct ChannelNotifyObserver {
 
 impl Observer for ChannelNotifyObserver {
     fn record_event(&self, event: &ObserverEvent) {
-        if let ObserverEvent::ToolCallStart { tool, arguments } = event {
+        if let ObserverEvent::ToolCallStart { tool, arguments, .. } = event {
             self.tools_used.store(true, Ordering::Relaxed);
             let detail = match arguments {
                 Some(args) if !args.is_empty() => {
@@ -2252,6 +2252,7 @@ async fn process_channel_message(
                 ctx.tool_call_dedup_exempt.as_ref(),
                 ctx.activated_tools.as_ref(),
                 None,
+                crate::observability::PromptType::Channel,
             ),
         ) => LlmExecutionResult::Completed(result),
     };
@@ -7087,6 +7088,7 @@ BTC is currently around $65,000 based on latest tool output."#
             &crate::observability::traits::ObserverEvent::ToolCallStart {
                 tool: "file_write".to_string(),
                 arguments: Some(payload),
+                prompt_type: crate::observability::PromptType::Channel,
             },
         );
 

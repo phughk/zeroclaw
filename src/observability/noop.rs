@@ -56,6 +56,7 @@ mod tests {
             tool: "shell".into(),
             duration: Duration::from_secs(1),
             success: true,
+            prompt_type: crate::observability::PromptType::Agent,
         });
         obs.record_event(&ObserverEvent::ChannelMessage {
             channel: "cli".into(),

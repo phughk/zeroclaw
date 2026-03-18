@@ -2186,6 +2186,7 @@ pub(crate) async fn agent_turn(
     dedup_exempt_tools: &[String],
     activated_tools: Option<&std::sync::Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
     model_switch_callback: Option<ModelSwitchCallback>,
+    prompt_type: crate::observability::PromptType,
 ) -> Result<String> {
     run_tool_call_loop(
         provider,
@@ -2207,6 +2208,7 @@ pub(crate) async fn agent_turn(
         dedup_exempt_tools,
         activated_tools,
         model_switch_callback,
+        prompt_type,
     )
     .await
 }
@@ -2218,11 +2220,13 @@ async fn execute_one_tool(
     activated_tools: Option<&std::sync::Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
     observer: &dyn Observer,
     cancellation_token: Option<&CancellationToken>,
+    prompt_type: crate::observability::PromptType,
 ) -> Result<ToolExecutionOutcome> {
     let args_summary = truncate_with_ellipsis(&call_arguments.to_string(), 300);
     observer.record_event(&ObserverEvent::ToolCallStart {
         tool: call_name.to_string(),
         arguments: Some(args_summary),
+        prompt_type,
     });
     let start = Instant::now();
 
@@ -2239,6 +2243,7 @@ async fn execute_one_tool(
             tool: call_name.to_string(),
             duration,
             success: false,
+            prompt_type,
         });
         return Ok(ToolExecutionOutcome {
             output: reason.clone(),
@@ -2265,6 +2270,7 @@ async fn execute_one_tool(
                 tool: call_name.to_string(),
                 duration,
                 success: r.success,
+                prompt_type,
             });
             if r.success {
                 Ok(ToolExecutionOutcome {
@@ -2289,6 +2295,7 @@ async fn execute_one_tool(
                 tool: call_name.to_string(),
                 duration,
                 success: false,
+                prompt_type,
             });
             let reason = format!("Error executing {call_name}: {e}");
             Ok(ToolExecutionOutcome {
@@ -2333,6 +2340,7 @@ async fn execute_tools_parallel(
     activated_tools: Option<&std::sync::Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
     observer: &dyn Observer,
     cancellation_token: Option<&CancellationToken>,
+    prompt_type: crate::observability::PromptType,
 ) -> Result<Vec<ToolExecutionOutcome>> {
     let futures: Vec<_> = tool_calls
         .iter()
@@ -2344,6 +2352,7 @@ async fn execute_tools_parallel(
                 activated_tools,
                 observer,
                 cancellation_token,
+                prompt_type,
             )
         })
         .collect();
@@ -2358,6 +2367,7 @@ async fn execute_tools_sequential(
     activated_tools: Option<&std::sync::Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
     observer: &dyn Observer,
     cancellation_token: Option<&CancellationToken>,
+    prompt_type: crate::observability::PromptType,
 ) -> Result<Vec<ToolExecutionOutcome>> {
     let mut outcomes = Vec::with_capacity(tool_calls.len());
 
@@ -2370,6 +2380,7 @@ async fn execute_tools_sequential(
                 activated_tools,
                 observer,
                 cancellation_token,
+                prompt_type,
             )
             .await?,
         );
@@ -2413,6 +2424,7 @@ pub(crate) async fn run_tool_call_loop(
     dedup_exempt_tools: &[String],
     activated_tools: Option<&std::sync::Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
     model_switch_callback: Option<ModelSwitchCallback>,
+    prompt_type: crate::observability::PromptType,
 ) -> Result<String> {
     let max_iterations = if max_tool_iterations == 0 {
         DEFAULT_MAX_TOOL_ITERATIONS
@@ -2950,6 +2962,7 @@ pub(crate) async fn run_tool_call_loop(
                 activated_tools,
                 observer,
                 cancellation_token.as_ref(),
+                prompt_type,
             )
             .await?
         } else {
@@ -2959,6 +2972,7 @@ pub(crate) async fn run_tool_call_loop(
                 activated_tools,
                 observer,
                 cancellation_token.as_ref(),
+                prompt_type,
             )
             .await?
         };
@@ -3123,6 +3137,7 @@ pub async fn run(
     interactive: bool,
     session_state_file: Option<PathBuf>,
     allowed_tools: Option<Vec<String>>,
+    prompt_type: crate::observability::PromptType,
 ) -> Result<String> {
     // ── Wire up agnostic subsystems ──────────────────────────────
     let base_observer = observability::create_observer(&config.observability);
@@ -3548,6 +3563,7 @@ pub async fn run(
                 &config.agent.tool_call_dedup_exempt,
                 activated_handle.as_ref(),
                 Some(model_switch_callback.clone()),
+                prompt_type,
             )
             .await
             {
@@ -3753,6 +3769,7 @@ pub async fn run(
                     &config.agent.tool_call_dedup_exempt,
                     activated_handle.as_ref(),
                     Some(model_switch_callback.clone()),
+                    prompt_type,
                 )
                 .await
                 {
@@ -4104,6 +4121,7 @@ pub async fn process_message(
         &config.agent.tool_call_dedup_exempt,
         activated_handle_pm.as_ref(),
         None,
+        crate::observability::PromptType::Webhook,
     )
     .await
 }
@@ -4193,7 +4211,7 @@ mod tests {
 
         let observer = NoopObserver;
         let result =
-            execute_one_tool("unknown_tool", call_arguments, &[], None, &observer, None).await;
+            execute_one_tool("unknown_tool", call_arguments, &[], None, &observer, None, crate::observability::PromptType::Agent).await;
         assert!(result.is_ok(), "execute_one_tool should not panic or error");
 
         let outcome = result.unwrap();
@@ -4222,6 +4240,7 @@ mod tests {
             Some(&activated),
             &observer,
             None,
+            crate::observability::PromptType::Agent,
         )
         .await
         .expect("suffix alias should execute the unique activated tool");
@@ -4562,6 +4581,7 @@ mod tests {
             &[],
             None,
             None,
+            crate::observability::PromptType::Agent,
         )
         .await
         .expect_err("provider without vision support should fail");
@@ -4611,6 +4631,7 @@ mod tests {
             &[],
             None,
             None,
+            crate::observability::PromptType::Agent,
         )
         .await
         .expect_err("oversized payload must fail");
@@ -4654,6 +4675,7 @@ mod tests {
             &[],
             None,
             None,
+            crate::observability::PromptType::Agent,
         )
         .await
         .expect("valid multimodal payload should pass");
@@ -4783,6 +4805,7 @@ mod tests {
             &[],
             None,
             None,
+            crate::observability::PromptType::Agent,
         )
         .await
         .expect("parallel execution should complete");
@@ -4855,6 +4878,7 @@ mod tests {
             &[],
             None,
             None,
+            crate::observability::PromptType::Agent,
         )
         .await
         .expect("loop should finish after deduplicating repeated calls");
@@ -4923,6 +4947,7 @@ mod tests {
             &[],
             None,
             None,
+            crate::observability::PromptType::Agent,
         )
         .await
         .expect("non-interactive shell should succeed for low-risk command");
@@ -4982,6 +5007,7 @@ mod tests {
             &exempt,
             None,
             None,
+            crate::observability::PromptType::Agent,
         )
         .await
         .expect("loop should finish with exempt tool executing twice");
@@ -5061,6 +5087,7 @@ mod tests {
             &exempt,
             None,
             None,
+            crate::observability::PromptType::Agent,
         )
         .await
         .expect("loop should complete");
@@ -5117,6 +5144,7 @@ mod tests {
             &[],
             None,
             None,
+            crate::observability::PromptType::Agent,
         )
         .await
         .expect("native fallback id flow should complete");
@@ -5186,6 +5214,7 @@ mod tests {
                 &[],
                 Some(&activated),
                 None,
+                crate::observability::PromptType::Agent,
             )
             .await
             .expect("wrapper path should execute activated tools");
@@ -7078,6 +7107,7 @@ Let me check the result."#;
             &[],
             None,
             None,
+            crate::observability::PromptType::Agent,
         )
         .await
         .expect("tool loop should complete");

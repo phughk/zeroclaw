@@ -954,6 +954,7 @@ async fn main() -> Result<()> {
                 true,
                 session_state_file,
                 None,
+                crate::observability::PromptType::Agent,
             ))
             .await
             .map(|_| ())

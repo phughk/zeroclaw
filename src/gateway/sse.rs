@@ -91,16 +91,19 @@ impl crate::observability::Observer for BroadcastObserver {
                 tool,
                 duration,
                 success,
+                prompt_type,
             } => serde_json::json!({
                 "type": "tool_call",
                 "tool": tool,
                 "duration_ms": duration.as_millis(),
                 "success": success,
+                "prompt_type": prompt_type.as_str(),
                 "timestamp": chrono::Utc::now().to_rfc3339(),
             }),
-            crate::observability::ObserverEvent::ToolCallStart { tool, .. } => serde_json::json!({
+            crate::observability::ObserverEvent::ToolCallStart { tool, prompt_type, .. } => serde_json::json!({
                 "type": "tool_call_start",
                 "tool": tool,
+                "prompt_type": prompt_type.as_str(),
                 "timestamp": chrono::Utc::now().to_rfc3339(),
             }),
             crate::observability::ObserverEvent::Error { component, message } => {
