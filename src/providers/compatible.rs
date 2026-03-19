@@ -43,6 +43,9 @@ pub struct OpenAiCompatibleProvider {
     extra_headers: std::collections::HashMap<String, String>,
     /// Optional reasoning effort for GPT-5/Codex-compatible backends.
     reasoning_effort: Option<String>,
+    /// When `Some(true)`, send `"thinking": true` in the request body to enable
+    /// chain-of-thought reasoning on llama.cpp / Qwen3-family models.
+    thinking_enabled: Option<bool>,
     /// Custom API path suffix (e.g. "/v2/generate").
     /// When set, overrides the default `/chat/completions` path detection.
     api_path: Option<String>,
@@ -182,6 +185,7 @@ impl OpenAiCompatibleProvider {
             timeout_secs: 120,
             extra_headers: std::collections::HashMap::new(),
             reasoning_effort: None,
+            thinking_enabled: None,
             api_path: None,
         }
     }
@@ -204,6 +208,16 @@ impl OpenAiCompatibleProvider {
     /// Set reasoning effort for GPT-5/Codex-compatible chat-completions APIs.
     pub fn with_reasoning_effort(mut self, reasoning_effort: Option<String>) -> Self {
         self.reasoning_effort = reasoning_effort;
+        self
+    }
+
+    /// Enable or disable the `thinking` parameter for llama.cpp / Qwen3-family models.
+    ///
+    /// When `Some(true)`, the request includes `"thinking": true` which instructs
+    /// llama.cpp to run the model's chain-of-thought reasoning before answering.
+    /// The resulting `<think>…</think>` blocks are stripped from the final response.
+    pub fn with_thinking(mut self, enabled: Option<bool>) -> Self {
+        self.thinking_enabled = enabled;
         self
     }
 
@@ -391,6 +405,9 @@ struct ApiChatRequest {
     stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<String>,
+    /// llama.cpp / Qwen3: enable chain-of-thought reasoning.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -589,6 +606,9 @@ struct NativeChatRequest {
     stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<String>,
+    /// llama.cpp / Qwen3: enable chain-of-thought reasoning.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1264,6 +1284,7 @@ impl Provider for OpenAiCompatibleProvider {
             temperature,
             stream: Some(false),
             reasoning_effort: self.reasoning_effort_for_model(model),
+            thinking: self.thinking_enabled,
             tools: None,
             tool_choice: None,
         };
@@ -1387,6 +1408,7 @@ impl Provider for OpenAiCompatibleProvider {
             temperature,
             stream: Some(false),
             reasoning_effort: self.reasoning_effort_for_model(model),
+            thinking: self.thinking_enabled,
             tools: None,
             tool_choice: None,
         };
@@ -1498,6 +1520,7 @@ impl Provider for OpenAiCompatibleProvider {
             temperature,
             stream: Some(false),
             reasoning_effort: self.reasoning_effort_for_model(model),
+            thinking: self.thinking_enabled,
             tools: if tools.is_empty() {
                 None
             } else {
@@ -1604,6 +1627,7 @@ impl Provider for OpenAiCompatibleProvider {
             temperature,
             stream: Some(false),
             reasoning_effort: self.reasoning_effort_for_model(model),
+            thinking: self.thinking_enabled,
             tool_choice: tools.as_ref().map(|_| "auto".to_string()),
             tools,
         };
@@ -1748,6 +1772,7 @@ impl Provider for OpenAiCompatibleProvider {
             temperature,
             stream: Some(options.enabled),
             reasoning_effort: self.reasoning_effort_for_model(model),
+            thinking: self.thinking_enabled,
             tools: None,
             tool_choice: None,
         };
@@ -1890,6 +1915,7 @@ mod tests {
             temperature: 0.4,
             stream: Some(false),
             reasoning_effort: None,
+            thinking: None,
             tools: None,
             tool_choice: None,
         };
@@ -2494,6 +2520,43 @@ mod tests {
         assert_eq!(provider.reasoning_effort_for_model("llama-3.3-70b"), None);
     }
 
+    #[test]
+    fn with_thinking_serializes_thinking_field() {
+        let provider =
+            make_provider("llamacpp", "http://localhost:8080/v1", Some("key")).with_thinking(Some(true));
+
+        let request = ApiChatRequest {
+            model: "qwen3.5-14b".to_string(),
+            messages: vec![],
+            temperature: 0.7,
+            stream: Some(false),
+            reasoning_effort: None,
+            thinking: provider.thinking_enabled,
+            tools: None,
+            tool_choice: None,
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"thinking\":true"), "thinking field must be present");
+    }
+
+    #[test]
+    fn with_thinking_none_omits_thinking_field() {
+        let provider = make_provider("llamacpp", "http://localhost:8080/v1", Some("key"));
+
+        let request = ApiChatRequest {
+            model: "qwen3.5-14b".to_string(),
+            messages: vec![],
+            temperature: 0.7,
+            stream: Some(false),
+            reasoning_effort: None,
+            thinking: provider.thinking_enabled,
+            tools: None,
+            tool_choice: None,
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(!json.contains("thinking"), "thinking field must be absent when None");
+    }
+
     #[tokio::test]
     async fn warmup_without_key_is_noop() {
         let provider = make_provider("test", "https://example.com", None);
@@ -2671,6 +2734,7 @@ mod tests {
             temperature: 0.7,
             stream: Some(false),
             reasoning_effort: None,
+            thinking: None,
             tools: Some(tools),
             tool_choice: Some("auto".to_string()),
         };

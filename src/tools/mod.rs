@@ -684,6 +684,7 @@ pub fn all_tools_with_runtime(
         }
     }
 
+    tool_arcs.sort_by(|l, r| l.name().cmp(r.name()));
     (boxed_registry_from_arcs(tool_arcs), delegate_handle)
 }
 

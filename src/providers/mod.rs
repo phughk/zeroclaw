@@ -1055,6 +1055,7 @@ fn create_provider_with_url_and_options(
     let compat = {
         let timeout = options.provider_timeout_secs;
         let reasoning_effort = options.reasoning_effort.clone();
+        let reasoning_enabled = options.reasoning_enabled;
         let extra_headers = options.extra_headers.clone();
         let api_path = options.api_path.clone();
         move |p: OpenAiCompatibleProvider| -> Box<dyn Provider> {
@@ -1064,6 +1065,9 @@ fn create_provider_with_url_and_options(
             }
             if let Some(ref effort) = reasoning_effort {
                 p = p.with_reasoning_effort(Some(effort.clone()));
+            }
+            if reasoning_enabled.is_some() {
+                p = p.with_thinking(reasoning_enabled);
             }
             if !extra_headers.is_empty() {
                 p = p.with_extra_headers(extra_headers.clone());
